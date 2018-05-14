@@ -84,26 +84,91 @@ def purge_repos(_now=None):
         project_repos = models.Repo.filter_by(project=p)
 
         # get the configuration for current project
-        ref_names = purge_rotation[project_name].keys()
         purge_project = purge_rotation.get(project_name)
 
-        for ref_name in ref_names:
-            purge_ref = purge_project[ref_name]
-            lifespan = now - datetime.timedelta(days=purge_ref.get('days', 14))
-            keep_minimum = purge_ref.get('keep_minimum', 0)
-            ref_repos = project_repos.filter_by(ref=ref_name)
+        # means flavor AND ref are being purged for project
+        if(len(purge_project.items()) > 1):
+            proj_filter_one = purge_project.items()[0][0]
+            repo_attrs_one = purge_project.items()[0][1]
+            proj_filter_two = purge_project.items()[1][0]
+            repo_attrs_two = purge_project.items()[1][1]
 
-            # filter the query further, with the offset being the
-            # minimum to keep, and lifespan how old they should be
-            repos = ref_repos.filter(
-                    models.Repo.modified < lifespan).order_by(
-                        desc(models.Repo.modified)).offset(keep_minimum).all()
-            delete_repositories(repos, lifespan, keep_minimum)
+            for repo_attr in repo_attrs_one:
+                purge_attr_one = repo_attrs_one[repo_attr]
+
+                days_one = purge_attr_one.get('days', None)
+                keep_minimum_one = purge_attr_one.get('keep_minimum', 0)
+
+                if proj_filter_one == 'ref':
+                    ref = repo_attr
+                else:
+                    flavor = repo_attr
+
+                for repo_attr in repo_attrs_two:
+                    purge_attr_two = repo_attrs_two[repo_attr]
+
+                    days_two = purge_attr_two.get('days', None)
+                    keep_minimum_two = purge_attr_two.get('keep_minimum', 0)
+
+                    if proj_filter_two == 'ref':
+                        ref = repo_attr
+                    else:
+                        flavor = repo_attr
+
+                    # days was not set in either flavor or ref
+                    if ((days_one == None) and (days_two == None)):
+                        days = 14
+                    elif days_one >= days_two:
+                        days = days_one
+                    else:
+                        days = days_two
+
+                    lifespan = now - datetime.timedelta(days=days)
+
+                    if keep_minimum_one >= keep_minimum_two:
+                        keep_minimum = keep_minimum_one
+                    else:
+                        keep_minimum = keep_minimum_two
+
+                    logger.info('ALI ADDED: ref is: %r ', ref)
+                    logger.info('ALI ADDED: flavor is: %r ', flavor)
+                    logger.info('ALI ADDED: keep_minimum is: %r ', keep_minimum)
+                    logger.info('ALI ADDED: days is: %r ', days)
+                    logger.info('ALI ADDED: lifespan is: %r ', lifespan)
+
+                    attr_repos = project_repos.filter_by(flavor=flavor, ref=ref)
+                    repos = attr_repos.filter(
+                            models.Repo.modified < lifespan).order_by(
+                                desc(models.Repo.modified)).offset(keep_minimum).all()
+
+                    logger.info('ALI ADDED: repos is: %r ', repos)
+                    delete_repositories(repos, lifespan, keep_minimum)
+
+        # means flavor OR ref are being purged for project
+        else:
+            for proj_filter, repo_attrs in purge_project.items():
+                for attr in repo_attrs:
+                    purge_attr = repo_attrs[attr]
+                    lifespan = now - datetime.timedelta(days=purge_attr.get('days', 14))
+                    keep_minimum = purge_attr.get('keep_minimum', 0)
+                    # add similar conditional to filter_by other repo attributes
+                    if proj_filter == 'ref':
+                        attr_repos = project_repos.filter_by(ref=attr)
+                    elif proj_filter == 'flavor':
+                        attr_repos = project_repos.filter_by(flavor=attr)
+                    repos = attr_repos.filter(
+                            models.Repo.modified < lifespan).order_by(
+                                desc(models.Repo.modified)).offset(keep_minimum).all()
+                    delete_repositories(repos, lifespan, keep_minimum)
 
     # process everything else that isn't configured, with the defaults
     for r in models.Repo.query.filter(models.Repo.modified < default_lifespan).all():
-        if purge_rotation.get(r.project.name, {}).get(r.ref):
+        # add similar conditional to filter_by other repo attributes
+        if purge_rotation.get(r.project.name, {}).get('ref', {}).get(r.ref):
             # this project has a ref with special configuration for purging
+            continue
+        elif purge_rotation.get(r.project.name, {}).get('flavor', {}).get(r.flavor):
+            # this project has a flavor with special configuration for purging
             continue
         delete_repositories([r], default_lifespan, default_keep_minimum)
     logger.info('completed repo purging')
